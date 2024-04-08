@@ -1,0 +1,624 @@
+# encoding: UTF-8
+
+from __future__ import division
+from abc import abstractmethod
+import traceback, tempfile
+import re
+from datetime import datetime
+import zlib
+import os, sys, subprocess
+import pathlib
+
+SS_EXE = os.path.join(os.path.dirname(__file__), 'bin', 'SS.EXE')
+
+# ---------------------------------------
+def tree_files() :
+    files = []
+    # os.system('SS.EXE Dir -R -E $/')
+    child = subprocess.Popen((SS_EXE + ' Dir -R -E $/').split(' '), # 命令及其参数
+                            stdin=subprocess.PIPE,      # 标准输入（可向其写入）
+                            stdout=subprocess.PIPE,     # 标准输出（可从中读取）
+                            stderr=subprocess.PIPE,     # 标准错误输出（可从中读取）
+                            text=True                   # 设置文本模式，适用于Python 3.7+
+                            )
+    # # 向子进程的stdin写入一些数据
+    # input_data = "This is some test data containing keyword and anotherkeyword"
+    # child.stdin.write(input_data)
+    # child.stdin.flush()  # 确保数据立即发送到子进程
+
+    # 从子进程的stdout和stderr中读取数据
+    stdout_output, stderr_output = child.communicate()
+    # 检查子进程的退出状态码
+    print("\nExitCode(%s) %s" % (child.returncode, stderr_output))
+    child.stdin.close()
+    child.stdout.close()
+    child.stderr.close()
+
+    # print("Standard Output:\n", stdout_output)
+    tree_cwd='$'
+    for line in stdout_output.split('\n') :
+        line = line.strip()
+        if len(line) <=0: continue
+        if '$' == line[0] :
+            if ':' == line[-1]:
+                tree_cwd = line[:-1]
+            else :
+                files.append(tree_cwd + '/' + line[1:] +'/') # subdir
+            continue
+
+        files.append(tree_cwd + '/' + line)
+
+    if len(files)>0 and  'item(s)' in files[-1] :
+        del files[-1] 
+
+    files.sort()
+    return files
+
+# ---------------------------------------
+def history_of_file(filepath) :
+    fn_ret, file_hist = '', [] # the return value
+    # os.system('SS.EXE Dir -R -E $/')
+    child = subprocess.Popen((SS_EXE + ' History '+filepath).split(' '), # 命令及其参数
+                            stdin=subprocess.PIPE,      # 标准输入（可向其写入）
+                            stdout=subprocess.PIPE,     # 标准输出（可从中读取）
+                            stderr=subprocess.PIPE,     # 标准错误输出（可从中读取）
+                            text=True                   # 设置文本模式，适用于Python 3.7+
+                            )
+    stdout_output, stderr_output = child.communicate()
+
+    # 检查子进程的退出状态码
+    print("\nExitCode(%s) %s" % (child.returncode, stderr_output))
+    child.stdin.close()
+    child.stdout.close()
+    child.stderr.close()
+
+    current={}
+    head_ln =''
+    VERSION_HDR='*****************  Version '
+    for line in stdout_output.split('\n') :
+        line = line.strip()
+        if len(line) <=0: continue
+
+        if '*'*8 == line[:8] : # new block starts
+            others = current.pop('others','')
+            verb = current.pop('verb', None)
+            strdt =current.pop('asof','')
+            author=current.pop('author','')
+            if verb: 
+                current = {'asof':strdt, 'author':author, 'verb':verb, **current, 'header':head_ln}
+                str2crc = '%s/%s@%s' %(author, verb,':'.join(strdt.split(':')[:-1]))
+
+                if 'label' == verb : str2crc += '%s}}%s' %(current.get('label_title'), current.get('comment'))
+                elif 'checkedin' == verb : str2crc += '%s' %(current.get('comment'))
+
+                current['uniq'] = '%08X' % zlib.crc32(str2crc.encode('utf-8'))
+                
+                if len(others) >0 : current['others'] = others
+                file_hist.append(current)
+                # if len(journal)>30: break # TESTCODE
+            elif len(head_ln) >0 :
+                print('NOT UNDDERSTAND: %s %s others: %s'%(head_ln, current, others))
+
+            head_ln = line
+            current={'others':[]}
+
+            if VERSION_HDR == head_ln[:len(VERSION_HDR)] :
+                current['version'] = head_ln[len(VERSION_HDR):].split(' ')[0]
+
+            continue
+
+        elif len(head_ln) <=0 :
+            if len(fn_ret) <=0 :
+                # History of $/CTFLib/V2.0/CTFTest/ctfTest.c ...
+                m = re.match(r'History of ([^ ]*) ...', line)
+                if m :
+                    fn_ret = m.group(1).strip()
+
+            head_ln=''
+            continue
+
+        # parse a line
+
+        # Label: "V9.67.6.0"
+        m = re.match(r'Label: "([^"]*)"', line)
+        if m :
+            current['verb'] = 'label'
+            current['label_title'] = m.group(1)
+            continue
+
+        # User: Gary.thomas     Date: 19/09/04   Time:  7:37
+        m = re.match(r'User: (.*)Date: (.*)Time: (.*)', line)
+        if m :
+            current['author']     = m.group(1).strip()
+            dtRecent = datetime.strptime(m.group(2).strip()+'T'+m.group(3).strip(), '%y/%m/%dT%H:%M')
+            dtRecent = dtRecent.replace(second=59) # .99)
+            current['asof'] = dtRecent.strftime('%Y-%m-%dT%H:%M:%S') 
+            continue
+
+        # Label comment: MCDriver-V9.67.6.0
+        m = re.match(r'Label comment:(.*)', line)
+        if m :
+            current['comment'] = m.group(1).strip()
+            continue
+
+        # Checked in $/MCDriver-Topology/Version_inc
+        m = re.match(r'Checked in (.*)', line)
+        if m :
+            fn_loc = m.group(1).strip()
+            current['verb'] = 'checkedin'
+            current['fn_loc'] = fn_loc
+            continue
+
+        # Comment: Add UHD
+        m = re.match(r'Comment:(.*)', line)
+        if m :
+            current['comment'] = m.group(1).strip()
+            continue
+
+        # SeaResource.h added | $VstrmSDK added
+        m = re.match(r'(.+) (added|deleted|destroyed|recovered|purged)', line)
+        if m :
+            fn_loc = m.group(1).strip()
+            current['verb'] = m.group(2).strip().lower()
+            current['fn_loc'] = fn_loc
+            continue
+
+        # $V3.0-Special renamed to $V3.2
+        m = re.match(r'([^ ]+) renamed to (.+)', line)
+        if m :
+            fn_loc = m.group(1).strip()
+            current['verb'] = 'renamed'
+            current['fn_loc'] = fn_loc
+            fn_loc = m.group(2).strip()
+            current['renamed_to'] = fn_loc
+            continue
+
+        # Created
+        if 'Created' == line and '1' == current.get('version') :
+            current['verb'] = 'created'
+
+        if line in ['Labeled'] :
+            continue # known line but useless
+    
+    file_hist.reverse()
+    return fn_ret, file_hist
+
+# ---------------------------------------
+def parse_jounal(fn_journal) : # file output by cmd: SS.EXE History -O@CTFLib_journal.txt $/
+    journal =[]
+    dtRecent,dtLast = None, None
+    with open(fn_journal, 'r') as fjn :
+        current={}
+        head_ln=''
+        for line in fjn.readlines() :
+            line = line.split('\r')[0].split('\n')[0]
+            # print(line)
+
+            if '*'*5 == line[:5] : # new block starts
+                others = current.pop('others','')
+                verb = current.pop('verb', None)
+                strdt =current.pop('asof','')
+                author=current.pop('author','')
+                if verb: 
+                    current = {'asof':strdt, 'author':author, 'verb':verb, **current, 'header':head_ln}
+                    str2crc = '%s/%s@%s' %(author, verb,':'.join(strdt.split(':')[:-1]))
+
+                    if 'label' == verb : str2crc += '%s}}%s' %(current.get('label_title'), current.get('comment'))
+                    elif 'checkedin' == verb : str2crc += '%s' %(current.get('comment'))
+
+                    current['uniq'] = '%08X' % zlib.crc32(str2crc.encode('utf-8'))
+                  
+                    if len(others) >0 : current['others'] = others
+                    journal.append(current)
+                    # if len(journal)>30: break # TESTCODE
+                elif len(head_ln) >0 :
+                    print('NOT UNDDERSTAND: %s %s others: %s'%(head_ln, current, others))
+
+                head_ln = line
+                current={'others':[]}
+                continue
+
+            if len(head_ln) <=0 : # or '*****************  Version' == head_ln[:len('*****************  Version')] :
+                head_ln=''
+                continue
+
+            # parse the line
+
+            # Version 67
+            m = re.match(r'Version ([0-9]*)', line)
+            if m :
+                current['version'] = m.group(1)
+                continue
+
+            # Label: "V9.67.6.0"
+            m = re.match(r'Label: "([^"]*)"', line)
+            if m :
+                current['verb'] = 'label'
+                current['label_title'] = m.group(1)
+                continue
+
+            # User: Gary.thomas     Date: 19/09/04   Time:  7:37
+            m = re.match(r'User: (.*)Date: (.*)Time: (.*)', line)
+            if m :
+                current['author']     = m.group(1).strip()
+                dtRecent = datetime.strptime(m.group(2).strip()+'T'+m.group(3).strip(), '%y/%m/%dT%H:%M')
+                dtRecent = dtRecent.replace(second=59) # .99)
+                current['asof'] = dtRecent.strftime('%Y-%m-%dT%H:%M:%S') 
+                continue
+
+            # Label comment: MCDriver-V9.67.6.0
+            m = re.match(r'Label comment:(.*)', line)
+            if m :
+                current['comment'] = m.group(1).strip()
+                continue
+
+            # Checked in $/MCDriver-Topology/Version_inc
+            m = re.match(r'Checked in (.*)', line)
+            if m :
+                fn_path = m.group(1).strip() + '/'+ head_ln[6:-6].strip()
+                current['verb'] = 'checkedin'
+                current['filepath'] = fn_path
+                continue
+
+            # Comment: Add UHD
+            m = re.match(r'Comment:(.*)', line)
+            if m :
+                current['comment'] = m.group(1).strip()
+                continue
+
+            # SeaResource.h added | $VstrmSDK added
+            m = re.match(r'(.+) (added|deleted|destroyed|recovered|purged)', line)
+            if m :
+                fn_path = m.group(1).strip()
+                if '$' == fn_path[0] : fn_path = fn_path[1:] +'/'
+                fn_path = '$/???/' + head_ln[6:-6].strip() +'/' + fn_path
+                current['verb'] = m.group(2).strip().lower()
+                current['filepath'] = fn_path
+                continue
+
+            # $V3.0-Special renamed to $V3.2
+            m = re.match(r'([^ ]+) renamed to (.+)', line)
+            if m :
+                fn_path = m.group(1).strip()
+                if '*****************  Version' == head_ln[:len('*****************  Version')] :
+                    parent_path = '$/'
+                else :
+                    parent_path = '$/???/' + head_ln[6:-6].strip() +'/'
+                if '$' == fn_path[0] : fn_path = fn_path[1:] +'/'
+                current['verb'] = 'renamed'
+                current['filepath'] = parent_path + fn_path
+                fn_path = m.group(2).strip()
+                if '$' == fn_path[0] : fn_path = fn_path[1:] +'/'
+                current['renamed_to'] = parent_path + fn_path
+                continue
+
+            # Created
+            if 'Created' == line and '1' == current.get('version') :
+                fn_path = '$/???/'+ head_ln[6:-6].strip() +'/'
+                current['verb'] = 'created'
+                current['filepath'] = fn_path
+
+            if line in ['Labeled'] :
+                continue # known line but useless
+
+            if len(line) >0: current['others'].append(line)
+
+    journal.reverse()
+    return journal
+
+# ---------------------------------------
+FILES_FINAL = None
+def associateActivity(filepath, **kwargs) :
+    global FILES_FINAL # nonlocal
+    if not isinstance(FILES_FINAL, dict) or len(FILES_FINAL) <=0:
+        FILES_FINAL={}
+        # files = tree_files()
+        # files.sort()
+        for fn in tree_files() :
+            fn =fn.replace('//','/')
+            key = fn.split('/')
+            key.reverse()
+            key = '/'.join(key)
+            FILES_FINAL[key] = { 'path': fn }
+
+    ret_files=[]
+    if '$/???/' != filepath[:len('$/???/')] :
+        hit = (filepath, kwargs.get('version',''))
+        ret_files.append(hit)
+    else :
+        asof = kwargs.get('asof')
+        uniq = kwargs.get('uniq')
+        key = filepath[6:].split('/')
+        key.reverse()
+        key = '/'.join(key)
+        candicates = list(filter(lambda x : x>=key and x <(key+'}'), FILES_FINAL.keys()))
+        for ck in candicates :
+            if len(FILES_FINAL[ck].get('hist',[])) <=0 :
+                fn_candi = FILES_FINAL[ck]['path']
+                fn, file_hist = history_of_file(fn_candi)
+                if fn != fn_candi or len(file_hist) <=0:
+                    print('candidate[%s] for %s not survived' % (fn_candi, filepath))
+                    continue
+                FILES_FINAL[ck]['hist'] =file_hist
+
+            file_hist = FILES_FINAL[ck]['hist']
+            for h in file_hist :
+                # TODO: if asof < h.get('asof') : break
+                # TODO: if asof == h.get('asof') and uniq ==h.get('uniq') :
+                if uniq ==h.get('uniq') :
+                    hit = (FILES_FINAL[ck]['path'], h.get('version'))
+                    ret_files.append(hit)
+                    print('%s hit %s' % (filepath, hit))
+                    break
+    
+    return ret_files
+
+        
+    localfn = './' +filepath[2:]
+    # print('cmd: mkdir -p %s' % '/'.join(localfn.split('/')[:-1]))
+    return filepath, localfn
+
+########################################################################
+if __name__ == '__main__':
+
+    os.environ['SSDIR']  = 'D:/temp/vss/CTFLib'
+    os.environ['SSUSER'] = 'build'
+    os.environ['SSPWD']  = 'nightly'
+
+    local_top = 'd:\\temp\\vss2git_top'
+    local_top = os.path.join(local_top, os.path.basename(os.environ['SSDIR']))
+
+    print('gitcmd: rm -rf %s' %(local_top))
+    if not os.path.isdir(local_top) :
+        pathlib.Path(local_top).mkdir(parents=True, exist_ok=True) 
+
+    sys.path.insert(0, os.path.dirname(__file__))
+    fn_journal = os.path.join(os.getcwd(), 'CTFLib_journal.txt') # SS.EXE History -O@CTFLib_journal.txt $/
+    os.chdir(local_top)
+    print('gitcmd: cd /d %s' %(local_top))
+    print('gitcmd: git init')
+
+    # files = tree_files()
+    # print('\n'.join(files))
+    # exit(0)
+    # _, hist = history_of_file('$/CTFLib/V2.0/CTFLib2.sln') # ever renamed
+    # _, hist = history_of_file('$/CTFLib/V3.0-SEAC/CTFTest/ctfTest3.0.suo') # ever deleted
+    # _, hist = history_of_file('$/CTFLib/build/buildbatch.txt') # long hist
+    # print('\n'*2+'>'*40)
+    # print('\n'.join([str(i) for i in hist]))
+    # exit(0)
+
+    # fn_journal = './CTFLib_journal.txt' # SS.EXE History -O@CTFLib_journal.txt $/
+    journal = parse_jounal(fn_journal)
+    # print('\n'*2+'>'*40)
+    # print('\n'.join([str(i) for i in journal]))
+    # exit(0)
+
+    last_author, author, last_verb, verb, last_uniq =None, None, None, None, None
+    bth_files, git_comment = [], ''
+    last_tagged = None
+    def __commit(label_title=None, label_commit=None) :
+        global bth_files, git_comment # nonlocal
+        if len(bth_files) >0 : 
+            gitcmd = 'git commit -m "%s"' % (git_comment)
+            print('gitcmd:%s' %(gitcmd))
+        if isinstance(label_title, str) and len(label_title) >0 :
+            global last_tagged
+            tag = label_title # TODO format
+            if last_tagged != tag : 
+                gitcmd = 'git tag "%s" -m "%s"' % (tag, label_commit)
+                print('gitcmd:%s' %(gitcmd))
+            last_tagged = tag
+
+        bth_files, git_comment = [], ''
+
+    # journal = list(filter(lambda x: 'buildbatch.txt' in x.get('filepath', ''), journal)) # TESTCODE
+    def __to_localfile(filepath) :
+        localfn = filepath
+        if '$/' == localfn[:2] : localfn = localfn[2:]
+        if '/' == localfn[0]   : localfn = localfn[1:]
+        localfn = './'+localfn
+        subdir = os.path.dirname(localfn) if '/'!=localfn[-1] else localfn
+        subdir = os.path.relpath(subdir)
+        print('gitcmd: mkdir -p %s' %(subdir)) # TESTCODE
+        if not os.path.isdir(subdir) : 
+            pathlib.Path(os.path.relpath(subdir)).mkdir(parents=True, exist_ok=True) 
+        return os.path.relpath(localfn)
+
+    for step in journal :
+        print(step) # TESTCODE
+        author = step.get('author')
+        verb = step.get('verb')
+        uniq = step.get('uniq')
+        if verb in ['created', 'added'] : verb= 'added'
+        if verb in ['destroyed', 'deleted'] : verb= 'deleted'
+
+        if last_author != author or last_verb != verb or (last_verb in ['checkedin'] and last_uniq != uniq): # or uniqkey changed
+            __commit()
+
+        last_author, last_verb, last_uniq = author, verb, uniq
+        filepath = step.get('filepath')
+
+        if 'label' == verb :
+            __commit(label_title=step.get('label_title'), label_commit=step.get('comment'))
+            continue
+
+        sscmd, gitcmd = '',''
+        git_comment = '%s %s %s' % (step.get('asof'), author, verb)
+        if 'added' == verb :
+            if '/' == filepath[-1] : continue # ignore subdirs
+
+            step['filepath'] = filepath
+            files_to_pull = associateActivity(**step)
+            for fn in files_to_pull :
+                localfn = __to_localfile(fn[0][2:])
+                sscmd  = SS_EXE + ' -i-y GET %s -V%s > %s' % (fn[0], fn[1], localfn)
+                print('sscmd:%s' % sscmd)
+                gitcmd = 'git add -f %s' % (localfn)
+                bth_files.append(localfn)
+                print('gitcmd:%s' % gitcmd)
+            continue
+    
+        if 'deleted' == verb :
+            # if '/' == filepath[-1] : continue # ignore subdirs
+
+            files_to_pull = associateActivity(**step)
+            for fn in files_to_pull :
+                localfn = __to_localfile(fn[0][2:])
+                gitcmd = 'git rm %s' % (localfn)
+                bth_files.append(localfn)
+                print('gitcmd:%s' % gitcmd)
+            continue
+
+        if 'renamed' == verb :
+            renamed_to = step.get('renamed_to')
+
+            files_to_pull = associateActivity(**step)
+            for fn in files_to_pull :
+                localfn = __to_localfile(fn[0][2:])
+                local_renamed_to = __to_localfile(renamed_to)
+                gitcmd = 'git mv %s %s' % (localfn, local_renamed_to)
+                bth_files.append(localfn)
+                print('gitcmd:%s' % gitcmd)
+
+            continue
+
+        if 'checkedin' == verb :
+            git_comment += ': %s'%step.get('comment')
+            files_to_pull = associateActivity(**step)
+            for fn in files_to_pull :
+                localfn = __to_localfile(fn[0][2:])
+                sscmd  = SS_EXE + ' -i-y GET %s -V%s > %s' % (fn[0], fn[1], localfn)
+                print('sscmd:%s' % sscmd)
+                gitcmd = 'git add -f %s' % localfn
+                bth_files.append(localfn)
+                print('gitcmd:%s' % gitcmd)
+            continue
+
+        print('NOT-YET: %s'%step)
+
+
+    # print('\n'*2+'>'*40)
+    # print('\n'.join([str(i) for i in journal]))
+
+'''
+download git for windows: https://git-scm.com/download/win
+
+https://learn.microsoft.com/en-us/previous-versions/7174xsc2(v=vs.80)
+https://learn.microsoft.com/en-us/previous-versions/hsxzf2az(v=vs.80)
+https://svn.ssec.wisc.edu/repos/APSPS/trunk/SPS/Installer/AntInstaller-beta0.8/web/manual1.6.2/manual/OptionalTasks/vss.html#vsshistory
+
+https://blog.csdn.net/kinrrom/article/details/448195
+当执行命令行过程中，有提示输入“Y/N”时，可以在命令行中直接做成命令的参数，屏蔽问题。
+-i-y 回答yes
+-i-n 回答no
+history	ss.exe can be used for many things - we are telling it to do a history report.
+"$/Projects/My Project"	Path to the project i want reported on in the SourceSafe repository pointed to by SSDIR.
+-Oc:\blah.txt	-O means output, and then i specify the file i want the data outputed to.
+-R	This is the recursive flag, IOW it means do all projects (folders) under the project specified as the start point.
+-vd	This is the bit that limits the date. In my case the dates are in real english format (dd/mm/yy), not US format. The later date is listed first. The tilde (~) indicates that it is a range. The time is included with the date by separating it with a semi-colon, and the AM/PM is indicated by using either 'a' or 'p'.
+
+All
+-# Option (Command Line)
+Specifies the number of entries for the History command to display for a file or project.
+-? Option (Command Line)
+Gets Help for the selected command.
+-B Option (Command Line)
+Specifies if files are binary or text for the Properties, Add, and Filetype commands. For the History and Diff commands, the -B option specifies a brief format. For the Merge command, this option specifies the base version for the destination project.
+-C Option (Command Line)
+Specifies a comment for a command.
+-D Option (Command Line)
+Controls how Visual SourceSafe displays differences.
+-E Option (Command Line)
+Produces an extended display for the Dir command, including checkout information for files. For the Share command, this option specifies a share and branch operation. When used with the Add, Properties, and Filetype commands, the option specifies the file encoding.
+-F Option (Command Line)
+Enables a display for files only, with no projects.
+-G Option (Command Line)
+Sets options for a retrieved working copy.
+-H Option (Command Line)
+Requests Help for the selected command.
+-I Option (Command Line)
+Indicates what factors Visual SourceSafe should ignore when comparing two files.
+-K Option (Command Line)
+Specifies if a file remains checked out after you check it in.
+-L Option (Command Line)
+Specifies labels for files or projects for many commands. For the Checkout command, this option enables or disables the check out local version feature.
+-M Option (Command Line)
+Disables exclusive checkouts for an individual file.
+-N Option (Command Line)
+Specifies the file naming conventions for a command.
+-O Option (Command Line)
+Controls the output from commands that might display large amounts of information.
+-P Option (Command Line)
+Specifies a project to use with a command.
+-Q Option (Command Line)
+Suppresses output for a command line command.
+-R Option (Command Line)
+Makes commands that operate on projects recursive to subprojects.
+-S Option (Command Line)
+Overrides the Smart_Mode initialization variable for a particular command.
+-U Option (Command Line)
+Displays user information about a file or project.
+-V Option (Command Line)
+Indicates the version of a file or project (item).
+-W Option (Command Line)
+Indicates if working copies are to be read/write or read-only.
+-Y Option (Command Line)
+Specifies a user name or user name and password.
+
+
+https://learn.microsoft.com/en-us/previous-versions/003ssz4z(v=vs.80)
+ss History <items> [-B] [-D] [-F-] [-H] [-I-] [-L] [-N] [-O] [-R] [-U<username>] [-V] [-Y] [-#] [-?]
+ss Diff <files> [-B][-D][-H][-I][-I-][-N][-O][-V][-Y][-?]
+ss Locate <items> [-H] [-I-] [-N] [-O] [-Y] [-?] # Searches Visual SourceSafe projects for the specified files or projects
+ss Paths <files> [-N] [-O] [-Y] # Shows all share links for files that have been branched. 
+ss Workfold [<project>] [<folder>] [-H] [-?] # Sets the working folder.
+ss Get <items> [-G] [-H] [-I-] [-N] [-O] [-R] [-V] [-W] [-Y] [-?]
+Retrieves a read-only copy of the file Test.c that is labeled Final: ss Get -VlFinal TEST.C
+
+D:/wkspaces/vss2git>set SSDIR=D:/temp/vss/CTFLib
+D:/wkspaces/vss2git>set SSUSER=build
+D:/wkspaces/vss2git>set SSPWD=nightly
+D:/wkspaces/vss2git>SS.EXE Dir -R -E -Ybuild,nightly $/
+...
+D:/wkspaces/vss2git>SS.EXE History -Ybuild,nightly $/MCDriver-Topology/Version_inc/version.h
+Username: ahs
+Password:
+User "ahs" not found
+Username: build
+Password: *******
+History of $/MCDriver-Topology/Version_inc/version.h ...
+
+**********************
+Label: "V10.69.2.0"
+User: Gary.thomas     Date: 19/05/21   Time:  7:28
+Labeled
+Label comment: Added UHD support
+
+*****************  Version 2   *****************
+User: Gary.thomas     Date: 19/05/21   Time:  7:26
+Checked in $/MCDriver-Topology/Version_inc
+Comment: Add UHD
+
+**********************
+Label: "V10.68.1.0"
+User: Gary.thomas     Date: 19/02/13   Time:  8:43
+Labeled
+Label comment: Version 10.68.1.0 - Release Candidate 1
+
+*****************  Version 1   *****************
+User: Gary.thomas     Date: 19/02/13   Time:  8:31
+Created
+Comment:
+
+D:/wkspaces/vss2git>SS.EXE GET -Ybuild,nightly /$/$branch/* -R -GWR -i-
+sCommand.Format(FormatStr("%s Get /"%s/" -V%d %s -GL/"%s/" >> %s",
+		ss_exe,
+		szVssFile,
+		nVssFileVersion,
+		config::szVssGetQuestionAnswer,
+		sTo,
+		szOutputFile));
+'''
+
+

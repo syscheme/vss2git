@@ -9,7 +9,7 @@ import zlib
 import os, sys, subprocess
 import pathlib
 
-SS_EXE = os.path.join(os.path.dirname(__file__), 'SS.EXE')
+SS_EXE = os.path.join(os.path.dirname(__file__), 'bin', 'SS.EXE')
 
 # ---------------------------------------
 def tree_files() :

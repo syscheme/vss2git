@@ -13,7 +13,8 @@ SS_EXE = os.path.join(os.path.dirname(__file__), 'bin', 'SS.EXE')
 VERSION_HDR='*****************  Version '
 HEADER_LEADING_STARS='*****'
 VERBS_IGNORE_ON_CHILD='labeled|added|deleted|destroyed|recovered|purged'.split('|')
-CMD_PROMPT='cmd> '
+
+CMD_PROMPT='SCRIPT> '
 
 def exec_cmd(cmd): 
     print('%s%s'%(CMD_PROMPT, cmd))
@@ -22,12 +23,15 @@ def exec_cmd(cmd):
 def exec_git(subcmd):  exec_cmd('git %s'%subcmd)
 def exec_ss(subcmd):   exec_cmd('%s %s'%(SS_EXE, subcmd))
 
+def debug(msg): 
+    print('DEBUG> %s'%msg)
+
 # ---------------------------------------
 def tree_files(tree_top='$/') :
     files = []
     
     # os.system('SS.EXE Dir -R -E $/')
-    child = subprocess.Popen((SS_EXE + ' Dir -R -E ' +tree_top).split(' '), # 命令及其参数
+    child = subprocess.Popen((SS_EXE + ' DIR -R -E').split(' ') +[tree_top], # 命令及其参数
                             stdin=subprocess.PIPE,      # 标准输入（可向其写入）
                             stdout=subprocess.PIPE,     # 标准输出（可从中读取）
                             stderr=subprocess.PIPE,     # 标准错误输出（可从中读取）
@@ -42,12 +46,12 @@ def tree_files(tree_top='$/') :
     stdout_output, stderr_output = child.communicate()
     # 检查子进程的退出状态码
     if 0 != child.returncode :
-        print("\nExitCode(%s) %s" % (child.returncode, stderr_output))
+        debug("SS-DIR err(%s) %s" % (child.returncode, stderr_output))
     child.stdin.close()
     child.stdout.close()
     child.stderr.close()
 
-    # print("Standard Output:\n", stdout_output)
+    # debug("Standard Output:\n", stdout_output)
     for line in stdout_output.split('\n') :
         line = line.strip()
         if len(line) <=0: continue
@@ -71,7 +75,7 @@ def tree_files(tree_top='$/') :
 def history_of_file(filepath, only_on_self=False) :
     fn_ret, file_hist = '', [] # the return value
     # os.system('SS.EXE Dir -R -E $/')
-    child = subprocess.Popen((SS_EXE + ' History '+filepath).split(' '), # 命令及其参数
+    child = subprocess.Popen((SS_EXE + ' History').split(' ') +[filepath], # 命令及其参数
                             stdin=subprocess.PIPE,      # 标准输入（可向其写入）
                             stdout=subprocess.PIPE,     # 标准输出（可从中读取）
                             stderr=subprocess.PIPE,     # 标准错误输出（可从中读取）
@@ -81,14 +85,14 @@ def history_of_file(filepath, only_on_self=False) :
 
     # 检查子进程的退出状态码
     if 0 != child.returncode :
-        print("\nExitCode(%s) %s" % (child.returncode, stderr_output))
+        debug("SS-History err(%s) %s" % (child.returncode, stderr_output))
     child.stdin.close()
     child.stdout.close()
     child.stderr.close()
 
     current={}
     head_ln =''
-    # print(stdout_output)
+    # debug(stdout_output)
     for line in stdout_output.split('\n') :
         line = line.strip()
         if len(line) <=0: continue
@@ -101,7 +105,7 @@ def history_of_file(filepath, only_on_self=False) :
             if verb : 
                 current = {'asof':strdt, 'author':author, 'verb':verb, **current, 'header':head_ln }
                 if only_on_self and VERSION_HDR != head_ln[:len(VERSION_HDR)] and verb in VERBS_IGNORE_ON_CHILD :
-                    # print('ignored activity on child: %s %s others: %s'%(head_ln, current, others)) # TESTCODE
+                    # debug('ignored activity on child: %s %s others: %s'%(head_ln, current, others)) # TESTCODE
                     pass
                 else :
                     str2crc = '%s/%s@%s' %(author, verb,':'.join(strdt.split(':')[:-1]))
@@ -117,7 +121,7 @@ def history_of_file(filepath, only_on_self=False) :
                 current={}
                 # if len(journal)>30: break # TESTCODE
             elif len(head_ln) >0 :
-                print('NOT UNDDERSTAND: %s %s others: %s'%(head_ln, current, others))
+                debug('NOT UNDDERSTAND: %s %s others: %s'%(head_ln, current, others))
 
             head_ln = line
             current={'others':[]}
@@ -268,7 +272,7 @@ def buildup_history(journal=None, **kwargs) :
         for asof, path in nexts :
             if isinstance(step, dict) and 'verb' in step : # all invalid steps have been set to None
                 journal_merged.append(step)
-                print('buildup_history() merged step: %s' %step) # TESTCODE
+                debug('buildup_history() merged step: %s' %step) # TESTCODE
                 # last_asof = max(last_asof, step.get('asof', ''))
                 step=None
 
@@ -295,7 +299,7 @@ def buildup_history(journal=None, **kwargs) :
                 step = None # ignore those activity not directly on self but on child
                 continue 
 
-            print('buildup_history() stepped %s> %s' %(filepath, step)) # TESTCODE
+            debug('buildup_history() stepped %s> %s' %(filepath, step)) # TESTCODE
 
             '''
             if verb in ['added'] :
@@ -313,7 +317,7 @@ def buildup_history(journal=None, **kwargs) :
 
         if isinstance(step, dict) and 'verb' in step : # all invalid steps have been set to None
             journal_merged.append(step)
-            print('buildup_history() merged step: %s' %step) # TESTCODE
+            debug('buildup_history() merged step: %s' %step) # TESTCODE
             # last_asof = max(last_asof, step.get('asof', ''))
             step=None
             
@@ -347,14 +351,14 @@ if __name__ == '__main__':
     exec_git('config --global user.email "vss2git@syscheme.com"')
 
     # files = tree_files()
-    # print('\n'.join(files))
+    # debug('\n'.join(files))
     # exit(0)
     # _, hist = history_of_file('$/CTFLib/V2.0/CTFLib2.sln') # ever renamed
     # _, hist = history_of_file('$/CTFLib/V3.0-SEAC/CTFTest/ctfTest3.0.suo') # ever deleted
     # _, hist = history_of_file('$/CTFLib/build/buildbatch.txt') # long hist
     # _, hist = history_of_file('$/CTFLib/build/') # long hist
-    # print('\n'*2+'>'*40)
-    # print('\n'.join([str(i) for i in hist]))
+    # debug('\n'*2+'>'*40)
+    # debug('\n'.join([str(i) for i in hist]))
     # exit(0)
 
     journal = buildup_history()
@@ -392,7 +396,7 @@ if __name__ == '__main__':
         return os.path.relpath(localfn)
 
     for step in journal :
-        # print(step) # TESTCODE
+        # debug(step)
         author = step.get('author')
         verb = step.get('verb')
         uniq = step.get('uniq')
@@ -467,11 +471,11 @@ if __name__ == '__main__':
                 exec_git(gitcmd)
             continue
 
-        print('NOT-YET: %s'%step)
+        debug('NotYetCovered: %s'%step)
 
 
-    # print('\n'*2+'>'*40)
-    # print('\n'.join([str(i) for i in journal]))
+    # debug('\n'*2+'>'*40)
+    # debug('\n'.join([str(i) for i in journal]))
 
 '''
 download git for windows: https://git-scm.com/download/win

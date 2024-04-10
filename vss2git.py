@@ -92,53 +92,76 @@ def history_of_file(filepath, only_on_self=False) :
 
     current={}
     head_ln =''
-    # debug(stdout_output)
+    debug(stdout_output)
+
+    selfAsDir = ('/' == filepath[-1])
+
+    def __flush_current() :
+        nonlocal current, file_hist, head_ln
+        others = current.pop('others','')
+        verb = current.pop('verb', None)
+        strdt =current.pop('asof','')
+        author=current.pop('author','')
+        if verb : 
+            current = {'asof':strdt, 'author':author, 'verb':verb, **current, 'header':head_ln }
+            if only_on_self and VERSION_HDR != head_ln[:len(VERSION_HDR)] : # and verb in VERBS_IGNORE_ON_CHILD :
+                debug('ignored activity on non-self: %s %s others: %s'%(head_ln, current, others)) # TESTCODE
+                pass
+            else :
+                str2crc = '%s/%s@%s' %(author, verb,':'.join(strdt.split(':')[:-1]))
+
+                if 'labeled' == verb : str2crc += '%s}}%s' %(current.get('label_title'), current.get('comment'))
+                elif 'checkedin' == verb : str2crc += '%s' %(current.get('comment'))
+
+                current['uniq'] = '%08X' % zlib.crc32(str2crc.encode('utf-8'))
+                
+                if len(others) >0 : current['others'] = others
+                file_hist.append(current)
+
+            current={}
+            # if len(journal)>30: break # TESTCODE
+        elif len(head_ln) >0 :
+            debug('NOT UNDDERSTAND: %s %s others: %s'%(head_ln, current, others))
+
+    child_focus=None
     for line in stdout_output.split('\n') :
         line = line.strip()
         if len(line) <=0: continue
 
         if HEADER_LEADING_STARS == line[:len(HEADER_LEADING_STARS)] : # new block starts
-            others = current.pop('others','')
-            verb = current.pop('verb', None)
-            strdt =current.pop('asof','')
-            author=current.pop('author','')
-            if verb : 
-                current = {'asof':strdt, 'author':author, 'verb':verb, **current, 'header':head_ln }
-                if only_on_self and VERSION_HDR != head_ln[:len(VERSION_HDR)] and verb in VERBS_IGNORE_ON_CHILD :
-                    # debug('ignored activity on child: %s %s others: %s'%(head_ln, current, others)) # TESTCODE
-                    pass
-                else :
-                    str2crc = '%s/%s@%s' %(author, verb,':'.join(strdt.split(':')[:-1]))
-
-                    if 'labeled' == verb : str2crc += '%s}}%s' %(current.get('label_title'), current.get('comment'))
-                    elif 'checkedin' == verb : str2crc += '%s' %(current.get('comment'))
-
-                    current['uniq'] = '%08X' % zlib.crc32(str2crc.encode('utf-8'))
-                    
-                    if len(others) >0 : current['others'] = others
-                    file_hist.append(current)
-
-                current={}
-                # if len(journal)>30: break # TESTCODE
-            elif len(head_ln) >0 :
-                debug('NOT UNDDERSTAND: %s %s others: %s'%(head_ln, current, others))
-
+            __flush_current()
             head_ln = line
+            child_focus=None
             current={'others':[]}
+            if len(fn_ret) >1 :
+                selfAsDir = ('/' == fn_ret[-1])
+                current['filepath'] = fn_ret
 
             if VERSION_HDR == head_ln[:len(VERSION_HDR)] :
                 current['version'] = head_ln[len(VERSION_HDR):].split(' ')[0]
+            else :
+                m = re.match(r'\*\*\*\*\*  (.+)  \*\*\*\*\*', line)
+                if m : child_focus = m.group(1).strip()
 
             continue
 
         elif len(head_ln) <=0 :
             if len(fn_ret) <=0 :
+                # SS.EXE History with no option -R
                 # History of $/CTFLib/V2.0/CTFTest/ctfTest.c ...
                 m = re.match(r'History of ([^ ]*) ...', line)
                 if m :
                     fn_ret = m.group(1).strip()
                     if '/' == filepath[-1] and '/' != fn_ret[-1] : fn_ret+='/'
 
+            if len(fn_ret) <=0 :
+                # if apply option -R on SS.EXE History <folder>, the output becomes:
+                # Building list for $/CTFLib/build...
+                m = re.match(r'Building list for .*', line)
+                if m : # this must be a dir
+                    fn_ret = filepath
+                    if '/' != fn_ret[-1] : fn_ret+='/'
+            
             head_ln=''
             continue
 
@@ -171,7 +194,9 @@ def history_of_file(filepath, only_on_self=False) :
         if m :
             fn_loc = m.group(1).strip()
             current['verb'] = 'checkedin'
-            current['fn_loc'] = fn_loc
+            current['where'] = fn_loc
+            if selfAsDir and child_focus: 
+                current['child'] = child_focus
             continue
 
         # Comment: Add UHD
@@ -185,11 +210,13 @@ def history_of_file(filepath, only_on_self=False) :
         if m :
             fn_loc = m.group(1).strip()
             if '$' == fn_loc[0] : fn_loc = fn_loc[1:] +'/'
-            if VERSION_HDR == head_ln[:len(VERSION_HDR)] and '/' == filepath[-1]:
-                fn_loc = filepath+fn_loc
-
             current['verb'] = m.group(2).strip().lower()
-            current['filepath'] = fn_loc
+
+            if selfAsDir :
+                current['child' if VERSION_HDR == head_ln[:len(VERSION_HDR)] else 'offspring' ] = fn_loc
+            else :
+                debug('NotYetCovered: %s'%line)
+
             continue
 
         # $V3.0-Special renamed to $V3.2
@@ -197,11 +224,13 @@ def history_of_file(filepath, only_on_self=False) :
         if m :
             fn_loc = m.group(1).strip()
             if '$' == fn_loc[0] : fn_loc = fn_loc[1:] +'/'
-            if VERSION_HDR == head_ln[:len(VERSION_HDR)] and '/' == filepath[-1]:
-                fn_loc = filepath+fn_loc
-
             current['verb'] = 'renamed'
-            current['filepath'] = fn_loc
+
+            if selfAsDir :
+                current['child' if VERSION_HDR == head_ln[:len(VERSION_HDR)] else 'offspring' ] = fn_loc
+            else :
+                debug('NotYetCovered: %s'%line)
+
             fn_loc = m.group(2).strip()
             if '$' == fn_loc[0] : fn_loc = fn_loc[1:] +'/'
             current['renamed_to'] = fn_loc
@@ -214,6 +243,7 @@ def history_of_file(filepath, only_on_self=False) :
         if line in ['Labeled'] :
             continue # known line but useless
     
+    __flush_current()
     file_hist.reverse()
     return fn_ret, file_hist
 
@@ -353,11 +383,15 @@ if __name__ == '__main__':
     # files = tree_files()
     # debug('\n'.join(files))
     # exit(0)
-    # _, hist = history_of_file('$/CTFLib/V2.0/CTFLib2.sln') # ever renamed
-    # _, hist = history_of_file('$/CTFLib/V3.0-SEAC/CTFTest/ctfTest3.0.suo') # ever deleted
-    # _, hist = history_of_file('$/CTFLib/build/buildbatch.txt') # long hist
-    # _, hist = history_of_file('$/CTFLib/build/') # long hist
-    # debug('\n'*2+'>'*40)
+    only_on_self =True
+    # only_on_self =False
+    f_ret, hist = history_of_file('$/', only_on_self) # hist on top
+    # f_ret, hist = history_of_file('$/CTFLib/V2.0/CTFLib2.sln', only_on_self) # ever renamed
+    # f_ret, hist = history_of_file('$/CTFLib/V3.0-SEAC/CTFTest/ctfTest3.0.suo', only_on_self) # ever deleted
+    # f_ret, hist = history_of_file('$/CTFLib/build/buildbatch.txt', only_on_self) # long hist
+    # f_ret, hist = history_of_file('$/CTFLib/build/', only_on_self) # long hist
+    # f_ret, hist = history_of_file('$/MCDriver/MCCGDriver/MCCGDriver.rc')
+    # debug('\n'*2+f_ret+'>'*40)
     # debug('\n'.join([str(i) for i in hist]))
     # exit(0)
 
@@ -390,10 +424,31 @@ if __name__ == '__main__':
         localfn = './'+localfn
         subdir = os.path.dirname(localfn) if '/'!=localfn[-1] else localfn
         subdir = os.path.relpath(subdir)
-        exec_cmd('if not exist "%s" mkdir "%s"' %(subdir, subdir)) # TESTCODE
-        if not os.path.isdir(subdir) : 
-            pathlib.Path(os.path.relpath(subdir)).mkdir(parents=True, exist_ok=True) 
+        # exec_cmd('if not exist "%s" mkdir "%s"' %(subdir, subdir)) # TESTCODE
+        # exec_cmd('if exist "%s" del /q "%s"' %(localfn, localfn)) # TESTCODE
+        # if not os.path.isdir(subdir) : 
+        #     pathlib.Path(os.path.relpath(subdir)).mkdir(parents=True, exist_ok=True) 
         return os.path.relpath(localfn)
+
+    def __ss_get_to_local(sspath, ssver) :
+        localfn = __to_localfile(sspath[2:])
+        subdir = os.path.dirname(localfn) if '/'!=localfn[-1] else localfn
+        subdir = os.path.relpath(subdir)
+        if not os.path.isdir(subdir) : 
+            pathlib.Path(os.path.realpath(subdir)).mkdir(parents=True, exist_ok=True) 
+
+        bn = os.path.basename(localfn)
+        subcmds = []
+        subcmds.append('if not exist "%s" mkdir "%s"' %(subdir, subdir))
+        subcmds.append('if exist "%s" del /q/f "%s"' %(localfn, localfn))
+        subcmds.append('if exist ".\%s" move ".\%s" ".\%s~"' %(bn, bn, bn))
+        subcmds.append(SS_EXE + ' GET %s -V%s' % (sspath, ssver))
+        subcmds.append('move /Y ".\%s" "%s"' %(bn, subdir+'\\'))
+        subcmds.append('if exist ".\%s~" move ".\%s~" ".\%s"' %(bn, bn, bn))
+        # exec_cmd(' && '.join(subcmds))
+        for i in subcmds : exec_cmd(i)
+
+        return localfn
 
     for step in journal :
         # debug(step)
@@ -424,9 +479,10 @@ if __name__ == '__main__':
             files_to_pull = associateActivity(**step)
             for sspath, ssver in files_to_pull :
                 if '/' == sspath[-1] : continue  # ignore subdirs
-                localfn = __to_localfile(sspath[2:])
-                sscmd  = 'GET %s -V%s > %s' % (sspath, ssver, localfn)
-                exec_ss(sscmd)
+                # localfn = localfn(sspath[2:])
+                # sscmd  = 'GET %s -V%s > %s' % (sspath, ssver, localfn)
+                # exec_ss(sscmd)
+                localfn = __ss_get_to_local(sspath, ssver)
                 gitcmd = 'add -f %s' % (localfn)
                 bth_files.append(localfn)
                 exec_git(gitcmd)
@@ -462,10 +518,10 @@ if __name__ == '__main__':
             git_comment += ': %s'%step.get('comment')
             files_to_pull = associateActivity(**step)
             for sspath, ssver in files_to_pull :
-                localfn = __to_localfile(sspath[2:])
                 if '/' == sspath[-1] : continue  # ignore subdirs
-                sscmd  = 'GET %s -V%s > %s' % (sspath, ssver, localfn)
-                exec_ss(sscmd)
+                localfn = __ss_get_to_local(sspath, ssver)
+                # sscmd  = 'GET %s -V%s > %s' % (sspath, ssver, localfn)
+                # exec_ss(sscmd)
                 gitcmd = 'add -f %s' % localfn
                 bth_files.append(localfn)
                 exec_git(gitcmd)
@@ -499,6 +555,7 @@ Controls how Visual SourceSafe displays differences.
 Produces an extended display for the Dir command, including checkout information for files. For the Share command, this option specifies a share and branch operation. When used with the Add, Properties, and Filetype commands, the option specifies the file encoding.
 -F Option (Command Line)
 Enables a display for files only, with no projects.
+
 -G Option (Command Line)
 Sets options for a retrieved working copy.
 -H Option (Command Line)

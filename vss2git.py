@@ -358,13 +358,45 @@ def associateActivity(filepath, **kwargs) :
     return [(filepath, kwargs.get('version',''))]
 
 ########################################################################
+import getopt
+
 if __name__ == '__main__':
 
-    os.environ['SSDIR']  = 'D:/temp/vss/CTFLib'
-    os.environ['SSUSER'] = 'build'
-    os.environ['SSPWD']  = 'nightly'
+    if len(sys.argv) <2:
+        # sys.argv = [ sys.argv[0]] + "-t d:\\temp\\vss2git_top -d D:/temp/vss/CTFLib -u build -p nightly".split(' ') # for X1Y3
+        sys.argv = [ sys.argv[0]] + "-t d:\\temp\\vss2git_top -d W:/vss/DSE1_TianShan.2.8 -u build -p nightly".split(' ') # for X1Y3
+        pass
 
-    local_top = 'd:\\temp\\vss2git_top'
+    ss_env = {
+        'SSDIR':  os.environ.get('SSDIR', 'D:/temp/vss/CTFLib'),
+        'SSUSER': os.environ.get('SSUSER', 'build'),
+        'SSPWD':  os.environ.get('SSPWD', 'nightly'),
+    }
+
+    local_top = os.environ.get('VSS2GIT_TOP', 'd:\\temp\\vss2git_top')
+
+    try:
+        opts, args = getopt.getopt(sys.argv[1:], "t:d:u:p:", ["local-top=","ss-database=","ss-user=","ss-passwd="])
+    except getopt.GetoptError :
+        print('vss2git.py -t <local-top> -d <ss-database> -u <ss-user> -p <ss-passwd>')
+        sys.exit(2)
+
+    for opt, optv in opts:
+        if opt in ("-t", "--local-top") :
+            local_top = optv
+            continue
+        if opt in ("-d", "--ss-database") :
+            ss_env['SSDIR'] = optv
+        if opt in ("-u", "--ss-user") :
+            ss_env['SSUSER'] = optv
+            continue
+        if opt in ("-p", "--ss-passwd") :
+            ss_env['SSPWD'] = optv
+            continue
+
+    # apply the final SS vars onto env
+    for var,v in ss_env.items() : os.environ[var] =v
+
     local_top = os.path.join(local_top, os.path.basename(os.environ['SSDIR']))
 
     exec_cmd('rd /s/q %s' %(local_top))
